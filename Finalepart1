@@ -1,0 +1,406 @@
+-
+```{r}
+#packages needed
+library( geojsonio )   # read shapefiles
+library( sp )          # work with shapefiles
+library( sf )          # work with shapefiles - simple features format
+library( mclust )      # cluster analysis 
+library( tmap )        # theme maps
+library( ggplot2 )     # graphing 
+library( ggthemes )    # nice formats for ggplots
+library( dplyr )       # data wrangling 
+library( pander )      # formatting RMD tables
+library( tidycensus )
+library(pander)
+library( cartogram )  # spatial maps w/ tract size bias reduction
+# library( maptools )   
+```
+
+
+```{r}
+# dorling cartogram of TUCSON,AZ Census Tracts
+crosswalk <- read.csv( "https://raw.githubusercontent.com/DS4PS/cpp-529-master/master/data/cbsatocountycrosswalk.csv",  stringsAsFactors=F, colClasses="character" )
+
+grep( "^TUC", crosswalk$msaname, value=TRUE ) 
+
+```
+
+```{r}
+grep( "^ARI", crosswalk$msaname, value=TRUE )
+
+```
+
+```{r}
+these.sdp <- crosswalk$msaname == "ARIZONA"
+these.fips <- crosswalk$fipscounty[ these.sdp ]
+these.fips <- na.omit( these.fips )
+
+```
+
+```{r}
+library( tidycensus )
+library(censusapi)
+
+census_api_key("0efb4a9f9b2b44d2a0a7a6cc221f5af3af0ebcdb")
+key <- "0efb4a9f9b2b44d2a0a7a6cc221f5af3af0ebcdb"
+census_api_key( key )
+
+```
+
+```{r}
+state.fips <- substr( these.fips, 1, 2 )
+county.fips <- substr( these.fips, 3, 5 )
+
+cbind( these.fips, state.fips, county.fips ) %>% pander()
+```
+
+```{r}
+tucson.pop <-
+get_acs( geography = "tract", variables = "B01003_001",
+         state = "04", county = county.fips[state.fips=="04"], geometry = TRUE ) %>% 
+         select( GEOID, estimate ) %>%
+         rename( POP=estimate )
+```
+
+
+```{r}
+URL <- "https://github.com/DS4PS/cpp-529-master/raw/master/data/ltdb_std_2010_sample.rds"
+census.dat <- readRDS(gzcon(url( URL )))
+
+# can merge an sf object and data.frame
+tucson.pop$GEOID<-sub('.', '', tucson.pop$GEOID)
+tucaz <- merge( tucson.pop, census.dat, by.x="GEOID", by.y="tractid" )
+
+# make sure there are no empty polygons
+tucaz <- tucaz[ ! st_is_empty( tucaz ) , ]
+
+head(tucaz)
+```
+
+```{r}
+dd.URL <- "https://raw.githubusercontent.com/DS4PS/cpp-529-master/master/data/data-dictionary.csv"
+data.dictionary <- read.csv( dd.URL, stringsAsFactors=F ) 
+data.dictionary %>% pander()
+```
+
+```{r}
+tucaz.sp <- as_Spatial( tucaz )
+
+class( tucaz.sp )
+plot( tucaz.sp )
+```
+
+```{r}
+# project map and remove empty tracts
+tucaz.sp <- spTransform( tucaz.sp, CRS("+init=epsg:3395"))
+tucaz.sp <- tucaz.sp[ tucaz.sp$POP != 0 & (! is.na( tucaz.sp$POP )) , ]
+
+# convert census tract polygons to dorling cartogram
+# no idea why k=0.03 works, but it does - default is k=5
+tucaz.sp$pop.w <- tucaz.sp$POP / 9000 # max(msp.sp$POP)   # standardizes it to max of 1.5
+tucaz_dorling <- cartogram_dorling( x=tucaz.sp, weight="pop.w", k=0.05 )
+plot( tucaz_dorling )
+axis(side=2)
+```
+
+```{r}
+tm_shape( tucaz_dorling ) + 
+  tm_polygons( size="POP", col="hinc12", n=7, style="quantile", palette="Spectral" )
+
+```
+
+```{r}
+# user-defined bounding box to move slocer to subjects 
+bb <- st_bbox( c( xmin =  -14000000, xmax = -13000000, 
+                  ymax = 5165123, ymin = 4156123 ), 
+                  crs = st_crs("+init=epsg:3395"))
+
+tm_shape( tucaz_dorling, bbox = bb) + 
+  tm_polygons( col="hinc12", n=10, style="quantile", palette="Spectral" ) +
+  tm_layout( "Dorling Cartogram", title.position=c("right","top") )
+```
+
+```{r}
+keep.these <- c("pnhwht12", "pnhblk12", "phisp12", "pntv12", "pfb12", "polang12", 
+"phs12", "pcol12", "punemp12", "pflabf12", "pprof12", "pmanuf12", 
+"pvet12", "psemp12", "hinc12", "incpc12", "ppov12", "pown12", 
+"pvac12", "pmulti12", "mrent12", "mhmval12", "p30old12", "p10yrs12", 
+"p18und12", "p60up12", "p75up12", "pmar12", "pwds12", "pfhh12")
+
+d1 <- tucaz_dorling@data
+d2 <- select( d1, keep.these )
+d3 <- apply( d2, 2, scale )
+head( d3[,1:6] ) %>% pander()
+```
+
+```{r}
+keep.these <- c("pnhwht12", "pnhblk12", "phisp12", "pntv12", "pfb12", "polang12", 
+"phs12", "pcol12", "punemp12", "pflabf12", "pprof12", "pmanuf12", 
+"pvet12", "psemp12", "hinc12", "incpc12", "ppov12", "pown12", 
+"pvac12", "pmulti12", "mrent12", "mhmval12", "p30old12", "p10yrs12", 
+"p18und12", "p60up12", "p75up12", "pmar12", "pwds12", "pfhh12")
+
+d2 <- select( d1, keep.these )
+d3 <- apply( d2, 2, scale )
+
+head( d3[,1:6] ) %>% pander()
+```
+
+```{r}
+# library( mclust )
+set.seed( 1234 )
+fit <- Mclust( d3 )
+tucaz_dorling$cluster <- as.factor( fit$classification )
+summary( fit )
+```
+
+```{r}
+plot( fit, what = "classification" )
+
+```
+
+```{r}
+df.pct <- sapply( d2, ntile, 100 )
+d4 <- as.data.frame( df.pct )
+d4$cluster <- as.factor( paste0("GROUP-",fit$classification) )
+
+num.groups <- length( unique( fit$classification ) )
+
+stats <- 
+d4 %>% 
+  group_by( cluster ) %>% 
+  summarise_each( funs(mean) )
+
+t <- data.frame( t(stats), stringsAsFactors=F )
+names(t) <- paste0( "GROUP.", 1:num.groups )
+t <- t[-1,]
+
+
+
+for( i in 1:num.groups )
+{
+  z <- t[,i]
+  plot( rep(1,30), 1:30, bty="n", xlim=c(-75,100), 
+        type="n", xaxt="n", yaxt="n",
+        xlab="Percentile", ylab="",
+        main=paste("GROUP",i) )
+  abline( v=seq(0,100,25), lty=3, lwd=1.5, col="gray90" )
+  segments( y0=1:30, x0=0, x1=100, col="gray70", lwd=2 )
+  text( -0.2, 1:30, data.dictionary$VARIABLE[-1], cex=0.85, pos=2 )
+  points( z, 1:30, pch=19, col="firebrick", cex=1.5 )
+  axis( side=1, at=c(0,50,100), col.axis="gray", col="gray" )
+}
+```
+
+
+```{r}
+summary( d2[ , 1:3 ] )
+
+```
+
+```{r}
+library( corrplot )
+
+d3 <- as.data.frame(d3)
+
+df.dim1 <- dplyr::select( d3, pown12, pmulti12, p10yrs12, pwds12, pfhh12 )
+
+corrplot( cor(df.dim1, use="complete.obs"), 
+          order = "hclust", tl.col='black', tl.cex=.75 ) 
+```
+
+```{r}
+# flip the signs 
+df.dim1$pmulti12  <-  - df.dim1$pmulti12
+df.dim1$p10yrs12  <-  - df.dim1$p10yrs12
+df.dim1$pwds12    <-  - df.dim1$pwds12
+df.dim1$pfhh12    <-  - df.dim1$pfhh12
+
+corrplot( cor(df.dim1, use="complete.obs"), 
+          order = "hclust", tl.col='black', tl.cex=.75 ) 
+```
+
+
+```{r}
+df.dim2 <- d3[ c("pnhwht12", "pnhblk12", "phisp12", "pfb12", "polang12") ]
+
+# Check direction
+# Need to flip percent white 
+
+corrplot( cor(df.dim2, use="complete.obs"), 
+          order = "hclust", tl.col='black', tl.cex=.75 ) 
+
+```
+
+```{r}
+df.dim3 <- select( d3, pcol12, phs12, pprof12, hinc12, mhmval12 )
+
+# Check direction
+# Need to flip high school graduation rates 
+
+corrplot( cor(df.dim3, use="complete.obs"), 
+          order = "hclust", tl.col='black', tl.cex=.75 ) 
+
+```
+
+```{r}
+dim1 <- d3$pown12 - d3$pmulti12 - d3$p10yrs12 - d3$pwds12 - d3$pfhh12
+dim2 <- - d3$pnhwht12 + d3$pnhblk12 + d3$phisp12 + d3$pfb12 + d3$polang12
+dim3 <- d3$pcol12 - d3$phs12 + d3$pprof12 + d3$hinc12 + d3$mhmval12
+
+df.nhood.metrics <- data.frame( dim1, dim2, dim3 )
+summary( df.nhood.metrics )
+
+```
+
+```{r}
+corrplot( cor( df.nhood.metrics, use="complete.obs" ), 
+          order = "hclust", tl.col='black', tl.cex=.75 ) 
+```
+
+```{r}
+df.dim2$pnhblk12  <-  - df.dim2$pnhblk12
+df.dim2$pfb12     <-  - df.dim2$pfb12
+df.dim2$phisp12   <-  - df.dim2$phisp12
+df.dim2$polang12  <-  - df.dim2$polang12
+
+corrplot( cor(df.dim2, use="complete.obs"), 
+          order = "hclust", tl.col='black', tl.cex=.75 )
+```
+
+```{r}
+df.dim3 <- select( d3, pcol12, phs12, pprof12, hinc12, mhmval12 )
+
+# Check direction
+# Need to flip high school graduation rates 
+
+corrplot( cor(df.dim3, use="complete.obs"), 
+          order = "hclust", tl.col='black', tl.cex=.75 )
+
+```
+
+```{r}
+df.dim3$pcol12    <-  - df.dim3$pcol12
+df.dim3$pprof12   <-  - df.dim3$pprof12
+df.dim3$hinc12    <-  - df.dim3$hinc12
+df.dim3$mhmval12  <-  - df.dim3$mhmval12
+
+corrplot( cor(df.dim3, use="complete.obs"), 
+          order = "hclust", tl.col='black', tl.cex=.75 )
+```
+
+```{r}
+dim1 <- d3$pown12 - d3$pmulti12 - d3$p10yrs12 - d3$pwds12 - d3$pfhh12
+dim2 <- - d3$pnhwht12 + d3$pnhblk12 + d3$phisp12 + d3$pfb12 + d3$polang12
+dim3 <- d3$pcol12 - d3$phs12 + d3$pprof12 + d3$hinc12 + d3$mhmval12
+
+df.nhood.metrics <- data.frame( dim1, dim2, dim3 )
+summary( df.nhood.metrics )
+```
+
+```{r}
+corrplot( cor( df.nhood.metrics, use="complete.obs" ), 
+          order = "hclust", tl.col='black', tl.cex=.75 ) 
+
+```
+
+```{r}
+# cluster with data set of three indices
+fit2 <- Mclust( df.nhood.metrics )
+summary( fit2 )
+```
+
+```{r}
+tucaz_dorling$cluster2 <- as.factor( fit2$classification )
+
+# cluster with dataset of three census variables 
+d33 <- data.frame( d3$p18und12, d3$pflabf12, d3$hinc12 )
+fit3 <- Mclust( d33 )
+summary( fit3 )
+```
+
+```{r}
+tucaz_dorling$cluster3 <- as.factor( fit3$classification )
+
+
+
+tmap_mode("plot")
+tmap_style("cobalt")
+
+tm1 <- 
+tm_shape( tucaz_dorling ) + 
+  tm_polygons( col="cluster", palette="Accent"  )
+
+tm2 <- 
+tm_shape( tucaz_dorling ) + 
+  tm_polygons( col="cluster2", palette="Accent"  )
+
+tm3 <- 
+tm_shape( tucaz_dorling ) + 
+  tm_polygons( col="cluster3", palette="Accent"  )
+
+
+tmap_arrange( tm1, tm2, tm3 )
+```
+
+```{r}
+plot( fit2, what = "classification" )
+
+```
+
+```{r}
+URL1 <- "https://github.com/DS4PS/cpp-529-fall-2020/raw/main/LABS/data/rodeo/LTDB-2000.rds"
+d1 <- readRDS( gzcon( url( URL1 ) ) )
+
+URL2 <- "https://github.com/DS4PS/cpp-529-fall-2020/raw/main/LABS/data/rodeo/LTDB-2010.rds"
+d2 <- readRDS( gzcon( url( URL2 ) ) )
+
+URLmd <- "https://github.com/DS4PS/cpp-529-fall-2020/raw/main/LABS/data/rodeo/LTDB-META-DATA.rds"
+md <- readRDS( gzcon( url( URLmd ) ) )
+
+d1 <- select( d1, - year )
+d2 <- select( d2, - year )
+
+d <- merge( d1, d2, by="tractid" )
+d <- merge( d, md, by="tractid" )
+
+# STANDARDIZE GEO IDs
+
+# note the current geoid format for the LTDB census data: 
+# FIPS-STATE-COUNTY-TRACT:  fips-01-001-020100  
+
+x <- d$tractid 
+# head( x )
+# [1] "fips-01-001-020100" "fips-01-001-020200" "fips-01-001-020300"
+# [4] "fips-01-001-020400" "fips-01-001-020500" "fips-01-001-020600"
+
+# remove non-numeric strings 
+x <- gsub( "fips", "", x )
+x <- gsub( "-", "", x )
+# head( x )
+# [1] "01001020100" "01001020200" "01001020300" "01001020400" "01001020500"
+# [6] "01001020600"
+
+# drop leading zeros 
+x <- as.numeric( x )
+
+# remember to add the variable back to the census dataset
+d$tractid2 <- x 
+
+tucaz <- merge( tucaz, d, by.x="GEOID", by.y="tractid", all.x=T )
+```
+
+```{r}
+library( geojsonio )
+
+# data frame and polygon ID standardization in case a tract was dropped and IDs don't match
+row.ids <- sapply( slot( phx_dorling, "polygons" ), function(x) slot( x, "ID" ) )
+row.names( phx_dorling ) <- row.ids
+
+# project to standard lat-lon coordinate system 
+tucaz_dorling <- spTransform( tucaz_dorling, CRS("+proj=longlat +datum=WGS84") )
+
+# write to file 
+geojson_write( tucaz_dorling, file="tucaz_dorling.geojson", geometry="polygon" )
+```
+
